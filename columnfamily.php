@@ -128,12 +128,12 @@ class ColumnFamily {
     const DEFAULT_BUFFER_SIZE = 8096;
 
     public $client;
-    private $column_family;
-    private $is_super;
-    private $cf_data_type;
-    private $col_name_type;
-    private $supercol_name_type;
-    private $col_type_dict;
+    public $column_family;
+    public $is_super;
+    public $cf_data_type;
+    public $col_name_type;
+    public $supercol_name_type;
+    public $col_type_dict;
 
     /** @var bool whether or not column names are automatically packed/unpacked */
     public $autopack_names;
@@ -547,6 +547,13 @@ class ColumnFamily {
     }
 
     /**
+     * @return ColumnFamilyMutator
+     */
+    public function batch($queue_size = 100, $write_consistency_level = null) {
+    	return new CfMutator($this, $queue_size, $this->wcl($write_consistency_level));
+    }
+
+    /**
      * Remove columns from a row.
      *
      * @param string $key the row to remove columns from
@@ -918,7 +925,7 @@ class ColumnFamily {
         return $ret;
     }
 
-    private function array_to_mutation($array, $timestamp=null, $ttl=null) {
+    public function array_to_mutation($array, $timestamp=null, $ttl=null) {
         if(empty($timestamp)) $timestamp = CassandraUtil::get_time();
 
         $c_or_sc = $this->array_to_supercolumns_or_columns($array, $timestamp, $ttl);
@@ -971,6 +978,413 @@ class ColumnFamily {
         return $ret;
     }
 }
+
+class ColumnFamilyMutator {
+
+	protected $_cfmap = array();
+
+	protected $_client;
+	protected $_limit;
+	protected $_wcl;
+	protected $_cf;
+	
+	protected function _enqueue($columnFamily, $key, $mutations) {
+
+		$this->_cfmap[$key][$columnFamily->column_family] = $mutations;
+
+		if ($this->_limit && count($this->_cfmap) > $this->_limit) {
+			$this->send();
+		}
+
+		return true;
+	}
+
+	public function __construct($client, $queue_size = 100, $wcl = cassandra_ConsistencyLevel::ONE) {
+
+		$this->_client = $client;
+		$this->_limit = $queue_size;
+		$this->_wcl = $wcl;
+	}
+
+	public function insert($columnFamily, $key, $columns, $timestamp=null, $ttl=null) {
+
+		/* @FIXME Temporarily workaround for pack, unpack methods*/
+		$this->_cf = $columnFamily;
+
+		$mutations = $this->array_to_mutation($columns, $timestamp, $ttl);
+		$this->_enqueue($columnFamily, $key, $mutations);
+
+		return $this;
+	}
+
+	public function remove($columnFamily, $key, $columns, $timestamp=null, $super_column=null) {
+
+		/* @FIXME Temporarily workaround for pack, unpack methods*/
+		$this->_cf = $columnFamily;
+
+		$mutations = $this->array_to_deletion($columns, $super_column, $timestamp);
+		$this->_enqueue($columnFamily, $key, $mutations);
+
+		return $this;
+	}
+
+	public function send($wcl = null) {
+
+		if ($wcl != null) {
+			$this->_wcl = $wcl; 
+		}
+
+		if (count($this->_cfmap) > 0) {
+			$this->_client->batch_mutate($this->_cfmap, $this->_wcl);
+			$this->_cfmap = array();
+		}
+	}
+
+    protected function array_to_mutation($array, $timestamp=null, $ttl=null) {
+        if(empty($timestamp)) $timestamp = CassandraUtil::get_time();
+
+        $c_or_sc = $this->array_to_supercolumns_or_columns($array, $timestamp, $ttl);
+        $ret = null;
+        foreach($c_or_sc as $row) {
+            $mutation = new cassandra_Mutation();
+            $mutation->column_or_supercolumn = $row;
+            $ret[] = $mutation;
+        }
+        return $ret;
+    }
+
+    protected function array_to_deletion($columnFamily, $array, $supercolumn=null, $timestamp=null) {
+        if(empty($timestamp)) $timestamp = CassandraUtil::get_time();
+
+        $deletion = new cassandra_Deletion();
+        $deletion->timestamp = $timestamp;
+
+        /** TODO Add supercolumn batch mutation support */
+
+		$predicate = $this->create_slice_predicate($array, '', '', false, count($array));
+		$deletion->predicate = $predicate;
+
+        $mutation = new cassandra_Mutation();
+        $mutation->deletion = $deletion;
+    }
+
+    protected function create_slice_predicate($columns, $column_start, $column_finish,
+                                                   $column_reversed, $column_count) {
+
+        $predicate = new cassandra_SlicePredicate();
+        if ($columns !== null) {
+            $packed_cols = array();
+            foreach($columns as $col)
+                $packed_cols[] = $this->pack_name($col, $is_supercol_name=$this->_cf->is_super);
+            $predicate->column_names = $packed_cols;
+        } else {
+            if ($column_start != null and $column_start != '')
+                $column_start = $this->pack_name($column_start,
+                                                 $is_supercol_name=$this->_cf->is_super,
+                                                 $slice_end=ColumnFamily::SLICE_START);
+            if ($column_finish != null and $column_finish != '')
+                $column_finish = $this->pack_name($column_finish,
+                                                 $is_supercol_name=$this->_cf->is_super,
+                                                  $slice_end=ColumnFamily::SLICE_FINISH);
+
+            $slice_range = new cassandra_SliceRange();
+            $slice_range->count = $column_count;
+            $slice_range->reversed = $column_reversed;
+            $slice_range->start  = $column_start;
+            $slice_range->finish = $column_finish;
+            $predicate->slice_range = $slice_range;
+        }
+        return $predicate;
+    }
+
+    protected function pack_name($value, $is_supercol_name=false, $slice_end=ColumnFamily::NON_SLICE) {
+        if (!$this->_cf->autopack_names)
+            return $value;
+        if ($value == null)
+            return;
+        if ($is_supercol_name)
+            $d_type = $this->_cf->supercol_name_type;
+        else
+            $d_type = $this->_cf->col_name_type;
+
+        if ($d_type == 'TimeUUIDType') {
+            if ($slice_end) {
+
+            } else {
+
+            }
+        }
+
+        return $this->pack($value, $d_type);
+    }
+
+    protected function unpack_name($b, $is_supercol_name=false) {
+        if (!$this->_cf->autopack_names)
+            return $b;
+        if ($b == null)
+            return;
+
+        if ($is_supercol_name)
+            $d_type = $this->_cf->supercol_name_type;
+        else
+            $d_type = $this->_cf->col_name_type;
+
+        return $this->unpack($b, $d_type);
+    }
+
+    private static function unpack_str($str, $len) {
+        $tmp_arr = unpack("c".$len."chars", $str);
+        $out_str = "";
+        foreach($tmp_arr as $v)
+            if($v > 0) { $out_str .= chr($v); }
+        return $out_str;
+    }
+   
+    private static function pack_str($str, $len) {       
+        $out_str = "";
+        for($i=0; $i<$len; $i++)
+            $out_str .= pack("c", ord(substr($str, $i, 1)));
+        return $out_str;
+    }
+
+    private static function pack_long($value) {
+        // If we are on a 32bit architecture we have to explicitly deal with
+        // 64-bit twos-complement arithmetic since PHP wants to treat all ints
+        // as signed and any int over 2^31 - 1 as a float
+        if (PHP_INT_SIZE == 4) {
+            $neg = $value < 0;
+
+            if ($neg) {
+              $value *= -1;
+            }
+
+            $hi = (int)($value / 4294967296);
+            $lo = (int)$value;
+
+            if ($neg) {
+                $hi = ~$hi;
+                $lo = ~$lo;
+                if (($lo & (int)0xffffffff) == (int)0xffffffff) {
+                    $lo = 0;
+                    $hi++;
+                } else {
+                    $lo++;
+                }
+            }
+            $data = pack('N2', $hi, $lo);
+        } else {
+            $hi = $value >> 32;
+            $lo = $value & 0xFFFFFFFF;
+            $data = pack('N2', $hi, $lo);
+        }
+        return $data;
+    }
+
+    private static function unpack_long($data) {
+        $arr = unpack('N2', $data);
+
+        // If we are on a 32bit architecture we have to explicitly deal with
+        // 64-bit twos-complement arithmetic since PHP wants to treat all ints
+        // as signed and any int over 2^31 - 1 as a float
+        if (PHP_INT_SIZE == 4) {
+
+            $hi = $arr[1];
+            $lo = $arr[2];
+            $isNeg = $hi  < 0;
+
+            // Check for a negative
+            if ($isNeg) {
+                $hi = ~$hi & (int)0xffffffff;
+                $lo = ~$lo & (int)0xffffffff;
+
+                if ($lo == (int)0xffffffff) {
+                    $hi++;
+                    $lo = 0;
+                } else {
+                    $lo++;
+                }
+            }
+
+            // Force 32bit words in excess of 2G to pe positive - we deal wigh sign
+            // explicitly below
+
+            if ($hi & (int)0x80000000) {
+                $hi &= (int)0x7fffffff;
+                $hi += 0x80000000;
+            }
+
+            if ($lo & (int)0x80000000) {
+                $lo &= (int)0x7fffffff;
+                $lo += 0x80000000;
+            }
+
+            $value = $hi * 4294967296 + $lo;
+
+            if ($isNeg)
+                $value = 0 - $value;
+
+        } else {
+            // Upcast negatives in LSB bit
+            if ($arr[2] & 0x80000000)
+                $arr[2] = $arr[2] & 0xffffffff;
+
+            // Check for a negative
+            if ($arr[1] & 0x80000000) {
+                $arr[1] = $arr[1] & 0xffffffff;
+                $arr[1] = $arr[1] ^ 0xffffffff;
+                $arr[2] = $arr[2] ^ 0xffffffff;
+                $value = 0 - $arr[1]*4294967296 - $arr[2] - 1;
+            } else {
+                $value = $arr[1]*4294967296 + $arr[2];
+            }
+        }
+        return $value;
+    }
+
+    protected function pack($value, $data_type) {
+        if ($data_type == 'LongType')
+            return self::pack_long($value);
+        else if ($data_type == 'IntegerType')
+            return pack('N', $value); // Unsigned 32bit big-endian
+        else if ($data_type == 'AsciiType')
+            return self::pack_str($value, strlen($value));
+        else if ($data_type == 'UTF8Type') {
+            if (mb_detect_encoding($value, "UTF-8") != "UTF-8")
+                $value = utf8_encode($value);
+            return self::pack_str($value, strlen($value));
+        }
+        else if ($data_type == 'TimeUUIDType' or $data_type == 'LexicalUUIDType')
+            return self::pack_str($value, 16);
+        else
+            return $value;
+    }
+            
+    protected function unpack($value, $data_type) {
+        if ($data_type == 'LongType')
+            return self::unpack_long($value);
+        else if ($data_type == 'IntegerType') {
+            $res = unpack('N', $value);
+            return $res[1];
+        }
+        else if ($data_type == 'AsciiType')
+            return self::unpack_str($value, strlen($value));
+        else if ($data_type == 'UTF8Type')
+            return utf8_decode(self::unpack_str($value, strlen($value)));
+        else if ($data_type == 'TimeUUIDType' or $data_type == 'LexicalUUIDType')
+            return $value;
+        else
+            return $value;
+    }
+
+    protected function get_data_type_for_col($col_name) {
+        if (!in_array($col_name, array_keys($this->_cf->col_type_dict)))
+            return $this->_cf->cf_data_type;
+        else
+            return $this->_cf->col_type_dict[$col_name];
+    }
+
+    protected function pack_value($value, $col_name) {
+        if (!$this->_cf->autopack_values)
+            return $value;
+        return $this->pack($value, $this->get_data_type_for_col($col_name));
+    }
+
+    protected function unpack_value($value, $col_name) {
+        if (!$this->_cf->autopack_values)
+            return $value;
+        return $this->unpack($value, $this->get_data_type_for_col($col_name));
+    }
+
+    protected function supercolumns_or_columns_to_array($array_of_c_or_sc) {
+        $ret = null;
+        foreach($array_of_c_or_sc as $c_or_sc) {
+            if($c_or_sc->column) { // normal columns
+                $name = $this->unpack_name($c_or_sc->column->name, false);
+                $value = $this->unpack_value($c_or_sc->column->value, $c_or_sc->column->name);
+                $ret[$name] = $value;
+            } else if($c_or_sc->super_column) { // super columns
+                $name = $this->unpack_name($c_or_sc->super_column->name, true);
+                $columns = $c_or_sc->super_column->columns;
+                $ret[$name] = $this->columns_to_array($columns);
+            }
+        }
+        return $ret;
+    }
+
+    protected function columns_to_array($array_of_c) {
+        $ret = null;
+        foreach($array_of_c as $c) {
+            $name  = $this->unpack_name($c->name, false);
+            $value = $this->unpack_value($c->value, $c->name);
+            $ret[$name] = $value;
+        }
+        return $ret;
+    }
+
+    protected function array_to_supercolumns_or_columns($array, $timestamp=null, $ttl=null) {
+        if(empty($timestamp)) $timestamp = CassandraUtil::get_time();
+
+        $ret = null;
+        foreach($array as $name => $value) {
+            $c_or_sc = new cassandra_ColumnOrSuperColumn();
+            if(is_array($value)) {
+                $c_or_sc->super_column = new cassandra_SuperColumn();
+                $c_or_sc->super_column->name = $this->pack_name($name, true);
+                $c_or_sc->super_column->columns = $this->array_to_columns($value, $timestamp, $ttl);
+                $c_or_sc->super_column->timestamp = $timestamp;
+            } else {
+                $c_or_sc = new cassandra_ColumnOrSuperColumn();
+                $c_or_sc->column = new cassandra_Column();
+                $c_or_sc->column->name = $this->pack_name($name, false);
+                $c_or_sc->column->value = $this->pack_value($value, $name);
+                $c_or_sc->column->timestamp = $timestamp;
+                $c_or_sc->column->ttl = $ttl;
+            }
+            $ret[] = $c_or_sc;
+        }
+
+        return $ret;
+    }
+
+    protected function array_to_columns($array, $timestamp=null, $ttl=null) {
+        if(empty($timestamp)) $timestamp = CassandraUtil::get_time();
+
+        $ret = null;
+        foreach($array as $name => $value) {
+            $column = new cassandra_Column();
+            $column->name = $this->pack_name($name, false);
+            $column->value = $this->pack_value($value, $name);
+            $column->timestamp = $timestamp;
+            $column->ttl = $ttl;
+            $ret[] = $column;
+        }
+        return $ret;
+    }
+}
+
+class CfMutator extends ColumnFamilyMutator {
+
+	/**
+	 * ColumnFamily
+	 * @var ColumnFamily
+	 */
+	protected $_cf;
+
+	public function __construct($columnFamily, $queue_size = 100, $wcl = cassandra_ConsistencyLevel::ONE) {
+
+		parent::__construct($columnFamily->client, $queue_size, $wcl);
+		$this->_cf = $columnFamily;
+	}
+
+	public function insert($key, $columns, $timestamp=null, $ttl=null) {
+		return parent::insert($this->_cf, $key, $columns, $timestamp, $ttl);
+	}
+
+	public function remove($key, $columns, $timestamp=null, $super_column=null) {
+		return parent::remove($this->_cf, $key, $columns, $timestamp, $super_column);
+	}
+}
+
 
 class ColumnFamilyIterator implements Iterator {
 
