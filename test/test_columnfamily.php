@@ -1,7 +1,10 @@
 <?php
 require_once('simpletest/autorun.php');
-require_once('../connection.php');
-require_once('../columnfamily.php');
+require_once('../lib/autoload.php');
+
+use phpcassa\Connection;
+use phpcassa\ColumnFamily;
+use phpcassa\Util\CassandraUtil;
 
 class TestColumnFamily extends UnitTestCase {
 
@@ -268,7 +271,6 @@ class TestColumnFamily extends UnitTestCase {
         # Keys at the end that we don't want
         foreach (range(201, 300) as $i)
             $cf->insert('key'.$i, $columns);
-
 
         $expr = CassandraUtil::create_index_expression($column_name='birthdate', $value=1);
         $clause = CassandraUtil::create_index_clause(array($expr), 100);

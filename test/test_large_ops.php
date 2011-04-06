@@ -1,8 +1,9 @@
 <?php
 require_once('simpletest/autorun.php');
-require_once('../connection.php');
-require_once('../columnfamily.php');
-require_once('../uuid.php');
+require_once('../lib/autoload.php');
+
+use phpcassa\ColumnFamily;
+use phpcassa\Connection\ConnectionPool;
 
 class TestLargeOps extends UnitTestCase {
 
@@ -38,4 +39,3 @@ class TestLargeOps extends UnitTestCase {
         }
     }
 }
-?>

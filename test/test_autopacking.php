@@ -1,8 +1,11 @@
 <?php
 require_once('simpletest/autorun.php');
-require_once('../connection.php');
-require_once('../columnfamily.php');
-require_once('../uuid.php');
+require_once('../lib/autoload.php');
+
+use phpcassa\ColumnFamily;
+use phpcassa\Connection\ConnectionPool;
+use phpcassa\Util\CassandraUtil;
+use phpcassa\Util\UUID;
 
 class TestAutopacking extends UnitTestCase {
 
@@ -512,7 +515,7 @@ class TestAutopacking extends UnitTestCase {
                                              $column_start='',
                                              $column_finish='',
                                              $column_reverse=False,
-                                             $count=ColumnFamily::DEFAULT_COLUMN_COUNT,
+                                             $count=ColumnFamily::DEFAULT_ROW_COUNT,
                                              $supercolumn=$LONG);
             foreach(range(0,2) as $i)
                 self::assertEqual($result[self::$KEYS[$i]], $group['dict'][$LONG]);
@@ -553,7 +556,7 @@ class TestAutopacking extends UnitTestCase {
                                               $column_start='',
                                               $column_finish='',
                                               $column_revered=False,
-                                              $column_count=ColumnFamily::DEFAULT_COLUMN_COUNT,
+                                              $column_count=ColumnFamily::DEFAULT_ROW_COUNT,
                                               $super_column=$LONG);
             foreach($result as $subres)
                 self::assertEqual($subres, $group['dict'][$LONG]);
@@ -612,7 +615,7 @@ class TestAutopacking extends UnitTestCase {
 
     public function test_uuid1_generation() {
         $micros = 1293769171436849;
-        $uuid = CassandraUtil::import(CassandraUtil::uuid1(null, $micros)); 
+        $uuid = CassandraUtil::import(CassandraUtil::uuid1(null, $micros));
         $t = (int)($uuid->time * 1000000);
         self::assertWithinMargin($micros, $t, 100);
     }

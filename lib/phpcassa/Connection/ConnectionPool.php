@@ -1,92 +1,14 @@
 <?php
-$GLOBALS['THRIFT_ROOT'] = dirname(__FILE__) . '/thrift/';
+namespace phpcassa\Connection;
+
+use phpcassa\Connection\ConnectionWrapper;
+
+$GLOBALS['THRIFT_ROOT'] = (__DIR__) . '/../../thrift';
 require_once $GLOBALS['THRIFT_ROOT'].'/packages/cassandra/Cassandra.php';
 require_once $GLOBALS['THRIFT_ROOT'].'/transport/TSocket.php';
 require_once $GLOBALS['THRIFT_ROOT'].'/protocol/TBinaryProtocol.php';
 require_once $GLOBALS['THRIFT_ROOT'].'/transport/TFramedTransport.php';
 require_once $GLOBALS['THRIFT_ROOT'].'/transport/TBufferedTransport.php';
-
-/**
- * @package phpcassa
- * @subpackage connection
- */
-class NoServerAvailable extends Exception { }
-
-/**
- * @package phpcassa
- * @subpackage connection
- */
-class IncompatibleAPIException extends Exception { }
-
-class MaxRetriesException extends Exception { }
-
-/**
- * @package phpcassa
- * @subpackage connection
- */
-class ConnectionWrapper {
-
-    const LOWEST_COMPATIBLE_VERSION = 17;
-    const DEFAULT_PORT = 9160;
-    public $keyspace;
-    public $client;
-    public $op_count;
-
-    public function __construct($keyspace,
-                                $server,
-                                $credentials=null,
-                                $framed_transport=True,
-                                $send_timeout=null,
-                                $recv_timeout=null)
-    {
-        $this->server = $server;
-        $server = explode(':', $server);
-        $host = $server[0];
-        if(count($server) == 2)
-            $port = (int)$server[1];
-        else
-            $port = self::DEFAULT_PORT;
-        $socket = new TSocket($host, $port);
-
-        if($send_timeout) $socket->setSendTimeout($send_timeout);
-        if($recv_timeout) $socket->setRecvTimeout($recv_timeout);
-
-        if($framed_transport) {
-            $transport = new TFramedTransport($socket, true, true);
-        } else {
-            $transport = new TBufferedTransport($socket, 1024, 1024);
-        }
-
-        $client = new CassandraClient(new TBinaryProtocolAccelerated($transport));
-        $transport->open();
-
-        $server_version = explode(".", $client->describe_version());
-        $server_version = $server_version[0];
-        if ($server_version < self::LOWEST_COMPATIBLE_VERSION) {
-            $ver = self::LOWEST_COMPATIBLE_VERSION;
-            throw new IncompatibleAPIException("The server's API version is too ".
-                "low to be comptible with phpcassa (server: $server_version, ".
-                "lowest compatible version: $ver)");
-        }
-
-        $client->set_keyspace($keyspace);
-
-        if ($credentials) {
-            $request = new cassandra_AuthenticationRequest(array("credentials" => $credentials));
-            $client->login($request);
-        }
-
-        $this->keyspace = $keyspace;
-        $this->client = $client;
-        $this->transport = $transport;
-        $this->op_count = 0;
-    }
-
-    public function close() {
-        $this->transport->close();
-    }
-
-}
 
 class ConnectionPool {
 
@@ -171,7 +93,7 @@ class ConnectionPool {
                 array_push($this->queue, $new_conn);
                 $this->stats['created'] += 1;
                 return;
-            } catch (TException $e) {
+            } catch (\TException $e) {
                 $h = $this->servers[$this->list_position];
                 $err = (string)$e;
                 error_log("Error connecting to $h: $err", 0);
@@ -237,13 +159,13 @@ class ConnectionPool {
                 $resp = call_user_func_array(array($conn->client, $f), $args);
                 $this->return_connection($conn);
                 return $resp;
-            } catch (cassandra_TimedOutException $toe) {
+            } catch (\cassandra_TimedOutException $toe) {
                 $last_err = $toe;
                 $this->handle_conn_failure($conn, $f, $toe, $retry_count);
-            } catch (cassandra_UnavailableException $ue) {
+            } catch (\cassandra_UnavailableException $ue) {
                 $last_err = $ue;
                 $this->handle_conn_failure($conn, $f, $ue, $retry_count);
-            } catch (TTransportException $tte) {
+            } catch (\TTransportException $tte) {
                 $last_err = $tte;
                 $this->handle_conn_failure($conn, $f, $tte, $retry_count);
             }
@@ -262,36 +184,3 @@ class ConnectionPool {
     }
 
 }
-
-class Connection extends ConnectionPool {
-
-
-    // Here for backwards compatibility reasons only
-    public function __construct($keyspace,
-                                $servers=NULL,
-                                $credentials=NULL,
-                                $framed_transport=true,
-                                $send_timeout=5000,
-                                $recv_timeout=5000,
-                                $retry_time=10)
-    {
-        trigger_error("The Connection class has been deprecated.  Use ConnectionPool instead.",
-            E_USER_NOTICE);
-
-        if ($servers != NULL) {
-            $new_servers = array();
-            foreach ($servers as $server) {
-                $new_servers[] = $server['host'] . ':' . (string)$server['port'];
-            }
-            $pool_size = count($new_servers);
-        } else {
-            $new_servers = NULL;
-            $pool_size = NULL;
-        }
-
-        parent::__construct($keyspace, $new_servers, $pool_size,
-            ConnectionPool::DEFAULT_MAX_RETRIES, $send_timeout, $recv_timeout,
-            ConnectionPool::DEFAULT_RECYCLE, $credentials, $framed_transport);
-    }
-}
-?>
