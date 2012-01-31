@@ -47,6 +47,28 @@ Removing
     $users->remove('key1'); // removes whole row
     $users->remove('key1', 'column1'); // removes 'column1'
 
+Working with CompositeType
+--------------------------
+
+Suppose we have a column family named "composite" with key_validation_class=UTF8Type,
+ comparator=Composite(LongType, UTF8Type) and default_validation_class=UTF8Type
+
+    // inserting a row with key is "123" and two columns (123, "111") => "1" and (124, "112") => "2"
+    $composite->insert("123", array(serialize(array(123, "111")) => "1", serialize(array(124, "112")) => "1"));
+    // getting all columns
+    $composite->get("123");
+    // getting a specific column
+    $composite->get("123", array(serialize(array(123, "111"))));
+    // getting all columns that have first component is greater than or equal 123
+    $composite->get("123", null, serialize(array(123)));
+    // getting all columns that have first component between 123 and 124 and the second component smaller than or equal 112
+    $composite->get("123", null, serialize(array(123)), serialize(array(123, array("112", TRUE))));
+    // getting all columns that have first component between 123 and 124 and the second component smaller than 112
+    $composite->get("123", null, serialize(array(123)), serialize(array(123, array("112", FALSE))));
+    // removing column (123, "111")
+    $composite->get("123", array(serialize(array(123, "111"))));
+
+
 Other
 -----
 
