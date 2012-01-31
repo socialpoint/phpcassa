@@ -126,6 +126,8 @@ class ColumnFamily {
     const MAX_COUNT = 2147483647; # 2^31 - 1
 
     const DEFAULT_BUFFER_SIZE = 1024;
+    
+    const COMPOSITE_TYPE_NAME = "CompositeType";
 
     public $client;
     private $column_family;
@@ -644,6 +646,8 @@ class ColumnFamily {
         $cp = $this->create_column_parent($super_column);
         $packed_key = $this->pack_key($key);
         $counter = new cassandra_CounterColumn();
+        if ($this->is_composite_type($this->col_name_type))
+            $column = unserialize($column);
         $counter->name = $this->pack_name($column);
         $counter->value = $value;
         $this->pool->call("add", $packed_key, $cp, $counter, $this->wcl($write_consistency_level));
@@ -698,16 +702,22 @@ class ColumnFamily {
             $cp->column_family = $this->column_family;
 
             if ($super_column !== null) {
+                if ($this->is_composite_type($this->supercol_name_type))
+                    $super_column = unserialize($super_column);
                 $cp->super_column = $this->pack_name($super_column, true);
             } else {
                 $cp->super_column = null;
             }
 
             if ($columns !== null) {
+                $name = $columns[0];
+                if ($this->is_composite_type($this->is_super? $this->supercol_name_type : $this->col_name_type)) {
+                    $name = unserialize($name);
+                }
                 if ($this->is_super && $super_column === null)
-                    $cp->super_column = $this->pack_name($columns[0], true);
+                    $cp->super_column = $this->pack_name($name, true);
                 else
-                    $cp->column = $this->pack_name($columns[0], false);
+                    $cp->column = $this->pack_name($name, false);
             }
 
             return $this->pool->call("remove", $packed_key, $cp, $timestamp,
@@ -718,6 +728,8 @@ class ColumnFamily {
         $deletion->timestamp = $timestamp;
 
         if ($super_column !== null) {
+            if ($this->is_composite_type($this->supercol_name_type))
+                $super_column = unserialize($super_column);
             $deletion->super_column = $this->pack_name($super_column, true);
         } else {
             $deletion->super_column = null;
@@ -760,12 +772,16 @@ class ColumnFamily {
         $cp->column_family = $this->column_family;
 
         if ($super_column !== null) {
+            if ($this->is_composite_type($this->supercol_name_type))
+                $super_column = unserialize($super_column);
             $cp->super_column = $this->pack_name($super_column, true);
         } else {
             $cp->super_column = null;
         }
 
         if ($column !== null) {
+            if ($this->is_composite_type($this->col_name_type))
+                $column = unserialize($column);
             $cp->column = $this->pack_name($column);
         } else {
             $cp->column = null;
@@ -799,6 +815,9 @@ class ColumnFamily {
     private static function extract_type_name($type_string) {
         if ($type_string == null or $type_string == '')
             return 'BytesType';
+        
+        if (self::is_composite_type($type_string))
+            return self::get_composite_name($type_string);
 
         $index = strrpos($type_string, '.');
         if ($index == false)
@@ -809,6 +828,51 @@ class ColumnFamily {
             return 'BytesType';
 
         return $type;
+    }
+    
+    private static function get_composite_name($type_string) {
+        $name = self::COMPOSITE_TYPE_NAME."(";
+        $inner_types = self::get_inner_types($type_string);
+        foreach ($inner_types as $type) {
+            $name .= self::extract_type_name($type) . ",";
+        }
+
+        return trim($name, ",") . ")";
+    }
+    
+    private static function is_composite_type($typename) {
+        return strpos($typename, self::COMPOSITE_TYPE_NAME) !== FALSE;
+    }
+
+
+    /**
+     * Give a string like CompositeType(LongType, UTF8Type) will return
+     * string "LongType, UTF8Type"
+     * 
+     * @param string $type_string
+     * @return string 
+     */
+    private static function get_inner_type($type_string) {
+        $lbPos = strpos($type_string, "(");
+        $rbPos = strrpos($type_string, ")");
+        if (($lbPos !== FALSE) && ($rbPos !== FALSE)) {
+            return substr($type_string, ++$lbPos, $rbPos-$lbPos);
+        }
+        
+        return $type_string;
+    }
+    
+    /**
+     * Give a string like CompositeType(LongType, UTF8Type) will return
+     * array ["LongType", "UTF8Type"]
+     * 
+     * @param String $type_string
+     * @return array 
+     */
+    private static function get_inner_types($type_string) {
+        $internal_str = self::get_inner_type($type_string);
+        
+        return explode(",", str_replace(" ", "", $internal_str));
     }
 
     private function rcl($read_consistency_level) {
@@ -831,10 +895,19 @@ class ColumnFamily {
         $predicate = new cassandra_SlicePredicate();
         if ($columns !== null) {
             $packed_cols = array();
-            foreach($columns as $col)
+            $is_composite = $this->is_composite_type($this->is_super?$this->supercol_name_type : $this->col_name_type);
+            foreach($columns as $col) {
+                if ($is_composite)
+                    $col = unserialize($col);
                 $packed_cols[] = $this->pack_name($col, $this->is_super);
+            }
             $predicate->column_names = $packed_cols;
         } else {
+            if ($this->is_composite_type($this->is_super? $this->supercol_name_type : $this->col_name_type)) {
+                $column_start = unserialize($column_start);
+                $column_finish = unserialize($column_finish);
+            }
+            
             if ($column_start !== null and $column_start != '')
                 $column_start = $this->pack_name($column_start,
                                                  $this->is_super,
@@ -880,7 +953,7 @@ class ColumnFamily {
         else
             $d_type = $this->col_name_type;
 
-        return $this->pack($value, $d_type);
+        return $this->pack($value, $d_type, $slice_end);
     }
 
     private function unpack_name($b, $is_supercol_name=false) {
@@ -1055,11 +1128,13 @@ class ColumnFamily {
         return $val;
     }
 
-    private function pack($value, $data_type) {
+    private function pack($value, $data_type, $slice_end=self::NON_SLICE) {
         if ($data_type == 'LongType')
             return self::pack_long($value);
         else if ($data_type == 'IntegerType')
             return self::pack_int($value);
+        else if ($this->is_composite_type ($data_type))
+            return $this->pack_composite_type($value, $data_type, $slice_end);
         else
             return $value;
     }
@@ -1069,10 +1144,64 @@ class ColumnFamily {
             return self::unpack_long($value);
         else if ($data_type == 'IntegerType')
             return self::unpack_int($value);
+        else if ($this->is_composite_type ($data_type))
+            return $this->unpack_composite_type($value, $data_type);
         else
             return $value;
     }
-
+    
+    private function pack_composite_type($value, $data_type, $slice_end=self::NON_SLICE) {
+        $res = "";
+        $inner_types = $this->get_inner_types($data_type);
+        foreach ($inner_types as $i=>$type) {
+            if ($i >= count($value)) {
+                break;
+            }
+            $eoc = 0x00;
+            $item = $value[$i];
+            if (is_array($item)) {
+                list($item, $inclusive) = $item;
+                if ($inclusive) {
+                    if ($slice_end == self::SLICE_START) {
+                        $eoc = 0xFF;
+                    }
+                    elseif ($slice_end == self::SLICE_FINISH) {
+                        $eoc = 0x01;
+                    }
+                }
+                else {
+                    if ($slice_end == self::SLICE_START) {
+                        $eoc = 0x01;
+                    }
+                    elseif ($slice_end == self::SLICE_FINISH) {
+                        $eoc = 0xFF;
+                    }
+                }
+            }
+            $packed = $this->pack($item, $type, $slice_end);
+            $len = mb_strlen($packed);
+            $res .= pack("C2", $len&0xFF00, $len&0xFF).$packed.pack("C1", $eoc);
+        }
+        
+        return $res;
+    }
+    
+    private function unpack_composite_type($value, $data_type) {
+        $start = 0;
+        $components = array();
+        $inner_types = $this->get_inner_types($data_type);
+        foreach ($inner_types as $type) {
+            $bytes = unpack("Chi/Clow", mb_substr($value, $start, 2));
+            $len = $bytes["hi"]*256 + $bytes["low"];
+            $data = mb_substr($value, $start+2, $len);
+            $unpacked = $this->unpack($data, $type);
+            $start = $start + 3 + $len;
+            $components[] = $unpacked;
+        }
+        
+        return serialize($components);
+    }
+    
     public function keyslices_to_array($keyslices) {
         $ret = null;
         foreach($keyslices as $keyslice) {
@@ -1171,15 +1300,21 @@ class ColumnFamily {
         foreach($array as $name => $value) {
             $c_or_sc = new cassandra_ColumnOrSuperColumn();
             if(is_array($value)) {
+                if ($this->is_composite_type($this->supercol_name_type)) {
+                    $name = unserialize($name);
+                }
                 $c_or_sc->super_column = new cassandra_SuperColumn();
                 $c_or_sc->super_column->name = $this->pack_name($name, true);
                 $c_or_sc->super_column->columns = $this->array_to_columns($value, $timestamp, $ttl);
                 $c_or_sc->super_column->timestamp = $timestamp;
             } else {
+                if ($this->is_composite_type($this->col_name_type)) {
+                    $name = unserialize($name);
+                }
                 $c_or_sc = new cassandra_ColumnOrSuperColumn();
                 $c_or_sc->column = new cassandra_Column();
                 $c_or_sc->column->name = $this->pack_name($name, false);
-                $c_or_sc->column->value = $this->pack_value($value, $name);
+                $c_or_sc->column->value = $this->pack_value($value, $c_or_sc->column->name);
                 $c_or_sc->column->timestamp = $timestamp;
                 $c_or_sc->column->ttl = $ttl;
             }
