@@ -1149,7 +1149,7 @@ class ColumnFamily {
         else
             return $value;
     }
-    
+
     private function pack_composite_type($value, $data_type, $slice_end=self::NON_SLICE) {
         $res = "";
         $inner_types = $this->get_inner_types($data_type);
@@ -1179,29 +1179,29 @@ class ColumnFamily {
                 }
             }
             $packed = $this->pack($item, $type, $slice_end);
-            $len = mb_strlen($packed);
+            $len = strlen($packed);
             $res .= pack("C2", $len&0xFF00, $len&0xFF).$packed.pack("C1", $eoc);
         }
-        
+
         return $res;
     }
-    
+
     private function unpack_composite_type($value, $data_type) {
         $start = 0;
         $components = array();
         $inner_types = $this->get_inner_types($data_type);
         foreach ($inner_types as $type) {
-            $bytes = unpack("Chi/Clow", mb_substr($value, $start, 2));
+            $bytes = unpack("Chi/Clow", substr($value, $start, 2));
             $len = $bytes["hi"]*256 + $bytes["low"];
-            $data = mb_substr($value, $start+2, $len);
+            $data = substr($value, $start+2, $len);
             $unpacked = $this->unpack($data, $type);
             $start = $start + 3 + $len;
             $components[] = $unpacked;
         }
-        
+
         return serialize($components);
     }
-    
+
     public function keyslices_to_array($keyslices) {
         $ret = null;
         foreach($keyslices as $keyslice) {
